@@ -203,17 +203,53 @@ impl Iterator for ParamIterator {
         Some(Poly { coeffs: poly })
     }
 }
+struct Histo {
+    counts: Vec<u64>,
+}
+impl Histo {
+    fn new() -> Self {
+        Self { counts: vec![] }
+    }
+    fn add(&mut self, i: u64) {
+        while self.counts.len() <= i as usize {
+            self.counts.push(0)
+        }
+        self.counts[i as usize] += 1
+    }
+    fn hist(&self, buckets: usize) -> Vec<u64> {
+        let total: u64 = self.counts.iter().sum();
+        let mut out = vec![];
+        let mut running = 0;
+        for (i, count) in self.counts.iter().enumerate() {
+            running += count;
+            while running as usize * buckets / total as usize > out.len() {
+                out.push(i as u64);
+            }
+        }
+        out
+    }
+}
 
-fn draw(pixels: usize, comp_size: f64, trials: u64, move_on: u64, max_iters: u64, seed: u64) -> RgbImage {
+fn draw(
+    pixels: usize,
+    comp_size: f64,
+    trials: u64,
+    move_on: u64,
+    max_iters: u64,
+    seed: u64,
+) -> RgbImage {
     let mut grid: Vec<Vec<Option<Params>>> = vec![vec![None; pixels]; pixels];
     let mut rng = StdRng::seed_from_u64(seed);
     let mut params_frontier: HashSet<Params> = HashSet::new();
     // Nonzero 1 gets stuck.
     params_frontier.insert(Params::new(1, 2, 2));
     let mut current_trials = 0;
-    let mut highest_degree = 0;
-    let mut highest_sum = 0;
-    let mut highest_nonzero = 0;
+    //let mut highest_degree = 0;
+    //let mut highest_sum = 0;
+    //let mut highest_nonzero = 0;
+    let mut counts_degree = Histo::new();
+    let mut counts_sum = Histo::new();
+    let mut counts_nonzero = Histo::new();
     while current_trials < trials {
         let current_params = *params_frontier
             .iter()
@@ -243,7 +279,11 @@ fn draw(pixels: usize, comp_size: f64, trials: u64, move_on: u64, max_iters: u64
         // generate polys
         for poly in current_params.to_iter() {
             // search polys
-            // TODO: Accelerate by skipping polys with no constant
+            // Accelerate by skipping polys with no constant
+            // Accelerate by skipping polys with negative constant term, adding negation
+            if poly.coeffs[0] <= 0 {
+                continue;
+            }
             let mut fails = 0;
             while fails < move_on {
                 current_trials += 1;
@@ -254,33 +294,58 @@ fn draw(pixels: usize, comp_size: f64, trials: u64, move_on: u64, max_iters: u64
                 };
                 let maybe_root = poly.root(start, max_iters);
                 if let Some(root) = maybe_root {
-                    let r_coord = (root.r + comp_size) * (pixels as f64 / (2.0 * comp_size)).round();
-                    let i_coord = (root.i + comp_size) * (pixels as f64 / (2.0 * comp_size)).round();
-                    if r_coord >= 0.0 && r_coord < pixels as f64 && i_coord >= 0.0 && i_coord < pixels as f64 {
+                    let r_coord =
+                        (root.r + comp_size) * (pixels as f64 / (2.0 * comp_size)).round();
+                    let i_coord =
+                        (root.i + comp_size) * (pixels as f64 / (2.0 * comp_size)).round();
+                    if r_coord >= 0.0
+                        && r_coord < pixels as f64
+                        && i_coord >= 0.0
+                        && i_coord < pixels as f64
+                    {
                         let rc_int = r_coord as usize;
                         let ic_int = i_coord as usize;
                         if grid[rc_int][ic_int].is_none() {
                             grid[rc_int][ic_int] = Some(current_params);
+                            grid[pixels-1-rc_int][pixels-1-ic_int] = Some(current_params);
                             fails = 0;
+                            counts_degree.add(current_params.degree);
+                            counts_sum.add(current_params.sum);
+                            counts_nonzero.add(current_params.nonzero);
+                            /*
                             highest_degree = highest_degree.max(current_params.degree);
                             highest_sum = highest_sum.max(current_params.sum);
                             highest_nonzero = highest_nonzero.max(current_params.nonzero);
+                            */
                         }
                     }
                 }
             }
         }
     }
+    let hist_degree = counts_degree.hist(255);
+    let hist_sum = counts_sum.hist(255);
+    let hist_nonzero = counts_nonzero.hist(255);
     // Make a histogram of parameter frequencies, scale colors proportional to position in the histogram.
     let mut img: RgbImage = ImageBuffer::new(pixels as u32, pixels as u32);
     for (i, row) in grid.iter().enumerate() {
         for (j, maybe_params) in row.iter().enumerate() {
             if let Some(params) = maybe_params {
-                let color = [
+                let degree_color = hist_degree
+                    .iter()
+                    .filter(|&&deg| deg < params.degree)
+                    .count() as u8;
+                let sum_color = hist_sum.iter().filter(|&&deg| deg < params.sum).count() as u8;
+                let nonzero_color = hist_nonzero
+                    .iter()
+                    .filter(|&&deg| deg < params.nonzero)
+                    .count() as u8;
+                let color = [degree_color, sum_color, nonzero_color];
+                /*[
                     (params.degree * 255 / highest_degree) as u8,
                     (params.sum * 255 / highest_sum) as u8,
                     (params.nonzero * 255 / highest_nonzero) as u8,
-                ];
+                ];*/
                 img.put_pixel(i as u32, j as u32, image::Rgb(color))
             }
         }
@@ -299,14 +364,37 @@ fn main() {
         println!("{i} {poly:?}");
     }
     */
-    let pixels = std::env::args().nth(1).expect("present").parse().expect("num");
-    let comp_size = std::env::args().nth(2).expect("present").parse().expect("num");
-    let trials = std::env::args().nth(3).expect("present").parse().expect("num");
-    let move_on = std::env::args().nth(4).expect("present").parse().expect("num");
-    let max_iters = std::env::args().nth(5).expect("present").parse().expect("num");
-    let seed = std::env::args().nth(6).expect("present").parse().expect("num");
+    let pixels = std::env::args()
+        .nth(1)
+        .expect("present")
+        .parse()
+        .expect("num");
+    let comp_size = std::env::args()
+        .nth(2)
+        .expect("present")
+        .parse()
+        .expect("num");
+    let trials = std::env::args()
+        .nth(3)
+        .expect("present")
+        .parse()
+        .expect("num");
+    let move_on = std::env::args()
+        .nth(4)
+        .expect("present")
+        .parse()
+        .expect("num");
+    let max_iters = std::env::args()
+        .nth(5)
+        .expect("present")
+        .parse()
+        .expect("num");
+    let seed = std::env::args()
+        .nth(6)
+        .expect("present")
+        .parse()
+        .expect("num");
     let filename = format!("img-{pixels}-{comp_size}-{trials}-{move_on}-{max_iters}-{seed}.png");
     let image = draw(pixels, comp_size, trials, move_on, max_iters, seed);
     image.save(&filename).expect("saved");
-
 }
